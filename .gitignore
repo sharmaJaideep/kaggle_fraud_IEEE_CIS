@@ -1,0 +1,47 @@
+# macOS and editor files
+.DS_Store
+.vscode/
+.idea/
+
+# Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Jupyter temporary files
+.ipynb_checkpoints/
+
+# Local secrets and environment settings
+.env
+.env.*
+!.env.example
+
+# Raw and locally downloaded datasets
+input_data/*
+!input_data/.gitkeep
+
+# Generated model artifacts, logs, and reports
+models/*
+!models/.gitkeep
+logs/*
+!logs/.gitkeep
+reports/*
+!reports/.gitkeep
+
+# Common data and model artifact formats
+*.pkl
+*.pickle
+*.joblib
+*.parquet
+*.feather
+*.h5
+*.onnx
+*.pt
+*.pth
+*.log
