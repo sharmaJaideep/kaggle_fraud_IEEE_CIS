@@ -13,10 +13,11 @@ validation:
   test_size: 0.20
 
 model:
-  name: lightgbm_baseline
-  n_estimators: 300
-  learning_rate: 0.05
-  num_leaves: 31
+  name: validation_weighted_ensemble
+  models: [lightgbm, xgboost, catboost]
+  n_estimators: 500
+  learning_rate: 0.04
+  num_leaves: 63
   max_depth: -1
   subsample: 0.80
   colsample_bytree: 0.80

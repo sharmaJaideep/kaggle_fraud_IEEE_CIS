@@ -27,10 +27,12 @@ The initial baseline is deliberately practical: it prioritizes a reliable data c
 │   └── 01_baseline_model.ipynb  # End-to-end baseline experiment
 ├── reports/                     # Evaluation outputs and figures
 ├── logs/                        # Run logs
+├── app.py                       # FastAPI fraud-risk service
 ├── src/
 │   ├── data/loading.py          # Join and memory reduction utilities
-│   ├── features/preprocessing.py# Consistent categorical encoding
-│   └── models/baseline.py       # Imbalance-aware LightGBM factory
+│   ├── features/preprocessing.py# Fitted aggregation/frequency feature logic
+│   ├── models/ensemble.py       # Validation-weighted booster ensemble/artifacts
+│   └── train.py                 # Reproducible training entry point
 ├── requirements.txt
 ├── setup_project.py              # Idempotent layout creator
 └── README.md
@@ -84,6 +86,17 @@ Report ROC-AUC on an untouched validation set, alongside the fraud rate, confusi
    ```
 
 6. Record the resulting ROC-AUC, configuration, and environment before comparing experiments. The notebook uses a stratified split for a quick baseline; production decisions should include stronger validation and monitoring.
+
+## Ensemble training and deployment
+
+The reusable training path fits transaction-identity group counts and amount statistics, missingness indicators, frequency encodings, time features, and categorical interactions using the training partition only. It trains LightGBM, XGBoost, and CatBoost with explicit tuned configurations, weights their validation probabilities by ROC-AUC, and saves preprocessing plus models together:
+
+```bash
+python -m src.train --config config/config.yaml --artifact models/fraud_ensemble.joblib
+uvicorn app:app --host 0.0.0.0 --port 8000
+```
+
+The service loads `models/fraud_ensemble.joblib` by default. Set `FRAUD_ARTIFACT_PATH` to use another artifact. Send one transaction JSON object to `POST /predict`; the response contains `fraud_probability`. `GET /health` reports whether the artifact loaded successfully.
 
 ## Notes on Scale and Reproducibility
 
