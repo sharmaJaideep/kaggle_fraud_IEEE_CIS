@@ -6,6 +6,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 from app import app
+from src.adversarial_validation import run_adversarial_validation
 from src.calibration import compute_calibration_curve, select_decision_threshold
 from src.features.preprocessing import TransactionFeatureEngineer
 from src.models.ensemble import load_artifact, optimize_oof_blend_weights, predict_artifact, save_artifact
@@ -268,6 +269,40 @@ def test_select_decision_threshold_finds_zero_cost_cutoff_for_separable_data():
     selected_row = next(row for row in curve if abs(row["threshold"] - threshold) < 1e-9)
     assert selected_row["precision"] == 1.0
     assert selected_row["recall"] == 1.0
+
+
+def test_adversarial_validation_flags_a_genuinely_drifting_column():
+    rng = np.random.default_rng(3)
+    n = 300
+    train = pd.DataFrame(
+        {
+            "TransactionID": np.arange(n),
+            "isFraud": rng.integers(0, 2, n),
+            "stable_feature": rng.normal(0, 1, n),
+            "drifting_feature": rng.normal(0.0, 1, n),
+            "ProductCD": rng.choice(["W", "C"], n),
+        }
+    )
+    test = pd.DataFrame(
+        {
+            "TransactionID": np.arange(n, 2 * n),
+            "stable_feature": rng.normal(0, 1, n),
+            "drifting_feature": rng.normal(6.0, 1, n),
+            "ProductCD": rng.choice(["W", "C"], n),
+        }
+    )
+
+    result = run_adversarial_validation(train, test, n_splits=3, random_state=1, top_n=5)
+
+    assert result["n_train"] == n
+    assert result["n_test"] == n
+    assert result["oof_auc"] > 0.9
+
+    top_names = [entry["feature"] for entry in result["top_features"]]
+    assert "drifting_feature" in top_names[:2]
+    drifting_entry = next(entry for entry in result["top_features"] if entry["feature"] == "drifting_feature")
+    assert drifting_entry["kind"] == "numeric"
+    assert drifting_entry["test_mean"] - drifting_entry["train_mean"] > 4.0
 
 
 def test_train_selects_hyperparameters_via_tuning_when_enabled(tmp_path):
