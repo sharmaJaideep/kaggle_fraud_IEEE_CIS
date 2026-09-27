@@ -13,6 +13,7 @@ import yaml
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import train_test_split
 
+from src.calibration import brier_score, compute_calibration_curve, select_decision_threshold
 from src.data.loading import load_training_data
 from src.features.preprocessing import TransactionFeatureEngineer
 from src.models.baseline import build_model
@@ -122,6 +123,27 @@ def train(config_path: str | Path = "config/config.yaml", artifact_path: str | P
     holdout_blend = sum(blend_weights[name] * holdout_predictions[name] for name in blend_weights)
     holdout_model_scores["blend"] = float(roc_auc_score(holdout_target, holdout_blend))
 
+    evaluation_settings = config.get("evaluation", {})
+    calibration_bins = int(evaluation_settings.get("calibration_bins", 10))
+    cost_false_negative = float(evaluation_settings.get("cost_false_negative", 5.0))
+    cost_false_positive = float(evaluation_settings.get("cost_false_positive", 1.0))
+    threshold_resolution = float(evaluation_settings.get("threshold_resolution", 0.01))
+
+    calibration_curve, calibration_error = compute_calibration_curve(
+        holdout_target, holdout_blend, n_bins=calibration_bins
+    )
+    holdout_brier_score = brier_score(holdout_target, holdout_blend)
+    selected_threshold, expected_cost, threshold_curve = select_decision_threshold(
+        holdout_target,
+        holdout_blend,
+        cost_false_negative=cost_false_negative,
+        cost_false_positive=cost_false_positive,
+        resolution=threshold_resolution,
+    )
+    metrics_at_selected_threshold = next(
+        row for row in threshold_curve if abs(row["threshold"] - selected_threshold) < 1e-9
+    )
+
     final_transformer = TransactionFeatureEngineer(id_column).fit(frame)
     final_features = final_transformer.transform(frame)
     full_class_weight = float((target.to_numpy() == 0).sum() / max((target.to_numpy() == 1).sum(), 1))
@@ -151,6 +173,20 @@ def train(config_path: str | Path = "config/config.yaml", artifact_path: str | P
             "enabled": tune_hyperparameters,
             "tuning_rows": tuning_rows,
             "scores": tuning_scores,
+        },
+        "decision_threshold": selected_threshold,
+        "calibration": {
+            "brier_score": holdout_brier_score,
+            "expected_calibration_error": calibration_error,
+            "bins": calibration_curve,
+        },
+        "threshold_selection": {
+            "cost_false_negative": cost_false_negative,
+            "cost_false_positive": cost_false_positive,
+            "selected_threshold": selected_threshold,
+            "expected_cost_at_selected": expected_cost,
+            "metrics_at_selected": metrics_at_selected_threshold,
+            "curve": threshold_curve,
         },
         "feature_version": "features-v1",
         "training_fingerprint": hashlib.sha256(
@@ -193,6 +229,20 @@ def train(config_path: str | Path = "config/config.yaml", artifact_path: str | P
             "tuning_rows": tuning_rows,
             "scores": tuning_scores,
         },
+        "decision_threshold": selected_threshold,
+        "calibration": {
+            "brier_score": holdout_brier_score,
+            "expected_calibration_error": calibration_error,
+            "bins": calibration_curve,
+        },
+        "threshold_selection": {
+            "cost_false_negative": cost_false_negative,
+            "cost_false_positive": cost_false_positive,
+            "selected_threshold": selected_threshold,
+            "expected_cost_at_selected": expected_cost,
+            "metrics_at_selected": metrics_at_selected_threshold,
+            "curve": threshold_curve,
+        },
         "feature_count": int(final_features.shape[1]),
         "model_configs": model_configs,
         "training_seconds": elapsed,
@@ -210,6 +260,11 @@ def train(config_path: str | Path = "config/config.yaml", artifact_path: str | P
     print(f"OOF-selected blend weights: {blend_weights}")
     print(f"Untouched holdout ROC-AUC: {holdout_model_scores}")
     print(f"Time-based ROC-AUC: {temporal_result['summary']}")
+    print(f"Calibration on holdout: Brier={holdout_brier_score:.4f}, ECE={calibration_error:.4f}")
+    print(
+        f"Selected decision threshold: {selected_threshold:.2f} "
+        f"(expected cost {expected_cost:.1f} at cost_fn={cost_false_negative}, cost_fp={cost_false_positive})"
+    )
     return holdout_model_scores
 
 

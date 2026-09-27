@@ -6,6 +6,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 from app import app
+from src.calibration import compute_calibration_curve, select_decision_threshold
 from src.features.preprocessing import TransactionFeatureEngineer
 from src.models.ensemble import load_artifact, optimize_oof_blend_weights, predict_artifact, save_artifact
 from src.predict_test import generate_submission
@@ -178,11 +179,58 @@ def test_training_to_kaggle_submission_pipeline(tmp_path):
     assert set(oof["fold"]) == {1, 2, 3}
     assert report_path.exists()
 
+    metadata = artifact["metadata"]
+    assert 0.0 < metadata["decision_threshold"] < 1.0
+    assert metadata["calibration"]["brier_score"] >= 0.0
+    assert len(metadata["calibration"]["bins"]) == 10
+    assert metadata["threshold_selection"]["selected_threshold"] == metadata["decision_threshold"]
+    assert metadata["threshold_selection"]["metrics_at_selected"]["threshold"] == metadata["decision_threshold"]
+
+    report = json.loads(report_path.read_text())
+    assert report["decision_threshold"] == metadata["decision_threshold"]
+    assert "calibration" in report and "threshold_selection" in report
+
     submission_path = tmp_path / "submission.csv"
     submission = generate_submission(config_path, artifact_path, submission_path)
     assert submission["TransactionID"].tolist() == test_ids[::-1].tolist()
     assert len(submission) == len(test_ids)
     assert submission["isFraud"].between(0, 1).all()
+
+
+def test_calibration_curve_reports_observed_vs_predicted_rates():
+    y_prob = np.array([0.05] * 5 + [0.95] * 5)
+    y_true = np.array([0, 0, 0, 0, 1] + [1, 1, 1, 1, 0])
+
+    curve, ece = compute_calibration_curve(y_true, y_prob, n_bins=10)
+
+    assert len(curve) == 10
+    low_bin = curve[0]
+    high_bin = curve[9]
+    assert low_bin["count"] == 5
+    assert abs(low_bin["mean_predicted"] - 0.05) < 1e-9
+    assert abs(low_bin["observed_fraud_rate"] - 0.2) < 1e-9
+    assert high_bin["count"] == 5
+    assert abs(high_bin["mean_predicted"] - 0.95) < 1e-9
+    assert abs(high_bin["observed_fraud_rate"] - 0.8) < 1e-9
+    assert abs(ece - 0.15) < 1e-9
+
+    empty_bins = [entry for entry in curve if entry["count"] == 0]
+    assert all(entry["mean_predicted"] is None for entry in empty_bins)
+
+
+def test_select_decision_threshold_finds_zero_cost_cutoff_for_separable_data():
+    y_true = np.array([0] * 50 + [1] * 50)
+    y_prob = np.array([0.1] * 50 + [0.9] * 50)
+
+    threshold, expected_cost, curve = select_decision_threshold(
+        y_true, y_prob, cost_false_negative=5.0, cost_false_positive=1.0, resolution=0.1
+    )
+
+    assert 0.1 < threshold <= 0.9
+    assert expected_cost == 0.0
+    selected_row = next(row for row in curve if abs(row["threshold"] - threshold) < 1e-9)
+    assert selected_row["precision"] == 1.0
+    assert selected_row["recall"] == 1.0
 
 
 def test_train_selects_hyperparameters_via_tuning_when_enabled(tmp_path):

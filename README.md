@@ -28,22 +28,22 @@ The baseline has grown from a single fast gradient-boosted model into a validati
 - **Training entry point** (`src/train.py`) — holds out an untouched stratified partition, tunes blend weights via OOF on the remainder, evaluates on the untouched holdout and a time-based split, then refits final models on all labeled rows for the deployed artifact. Emits `reports/oof_predictions.csv` and `reports/validation_report.json` (per-fold metrics, blend weights, training fingerprint, runtime).
 - **Hyperparameter tuning** (`src/train.py`, `tune_model_configs` in `src/models/ensemble.py`) — before OOF validation, a further stratified split is carved from the selection partition, and each booster's hyperparameters are chosen from a candidate pool (`DEFAULT_TUNING_CANDIDATES`, or a `model.tuning_candidates` override in config) by validation ROC-AUC. Controlled by `model.tune_hyperparameters` in `config.yaml` (default `true`); set to `false` to use the fixed `n_estimators`/`learning_rate`/`num_leaves` values instead. The selected configs and their tuning scores are persisted in both the artifact metadata and `validation_report.json` under `hyperparameter_tuning`.
 - **Submission generation** (`src/predict_test.py`, `src/reporting.py`) — scores the Kaggle test set with the saved artifact and writes a schema- and order-validated `submission.csv`.
+- **Calibration and decision-threshold selection** (`src/calibration.py`) — on the untouched holdout set, `compute_calibration_curve` bins predictions and reports the Brier score and Expected Calibration Error (whether a predicted 0.2 really means a ~20% fraud rate — ROC-AUC alone can't tell you that), and `select_decision_threshold` sweeps candidate cutoffs to find the one minimizing `cost_false_negative * FN + cost_false_positive * FP` (configurable under `evaluation` in `config.yaml`; default assumes a missed fraud costs 5x a wrongly blocked transaction). The result is saved as `decision_threshold` in the artifact metadata, which `app.py` was already reading but which nothing previously set — so the API now serves a cost-aware threshold instead of a hardcoded 0.5. Full curves and per-threshold metrics are also persisted in `validation_report.json`.
 - **Serving** (`app.py`) — a FastAPI app exposing `/health`, `/model-info`, `/predict`, and `/predict_batch`.
-- **Tests** (`tests/test_project_quality.py`) — 7 passing tests covering the feature engineer, OOF/blend-weight logic, time-based validation, hyperparameter-tuning wiring, a full synthetic train → artifact → submission pipeline, and the API contract.
+- **Tests** (`tests/test_project_quality.py`) — 9 passing tests covering the feature engineer, OOF/blend-weight logic, time-based validation, hyperparameter-tuning wiring, calibration and threshold-selection logic, a full synthetic train → artifact → submission pipeline, and the API contract.
 - **Continuous integration** (`.github/workflows/tests.yml`) — runs `python -m pytest tests/ -v` on every push and pull request targeting `main` (Python 3.11, dependencies from `requirements.txt`). The suite is self-contained (synthetic data via `tmp_path`), so it needs no Kaggle CSVs or pre-trained artifact. See [Continuous Integration](#continuous-integration) below for what it checks and why it's set up the way it is.
 - A trained artifact already exists locally at `models/fraud_ensemble.joblib` (~12 MB) from a prior run. Model artifacts and validation reports are gitignored as generated outputs, so they are reproduced locally via the commands below rather than committed.
 
 **Not yet done:**
 
 - No EDA summary or figures are committed under `reports/`, despite being part of the intended workflow below.
-- No calibration analysis or business-facing decision-threshold study yet, beyond the fixed default threshold used by the API.
 - Kaggle public/private leaderboard scores are unset (`null` placeholders in `validation_report.json`) — no submission has been uploaded to the competition.
 
 ## Next Steps
 
 1. Run and commit an EDA summary (target prevalence, missingness, cardinality, train/test drift) under `reports/`.
 2. Upload a submission to Kaggle and record the public/private leaderboard AUC in `validation_report.json`.
-3. Add calibration diagnostics and a threshold-selection analysis to support a real deployment decision, not just the default 0.5 cutoff.
+3. Re-run `src/train.py` against the real Kaggle CSVs (rather than only the synthetic test fixtures) to sanity-check the calibration curve and selected threshold on real fraud-rate data, and set `evaluation.cost_false_negative`/`cost_false_positive` in `config.yaml` to reflect actual business costs rather than the illustrative 5:1 default.
 
 ## Project Structure
 
@@ -66,6 +66,7 @@ The baseline has grown from a single fast gradient-boosted model into a validati
 │   │   ├── baseline.py           # Per-booster model factories (LightGBM/XGBoost/CatBoost)
 │   │   └── ensemble.py           # Blend-weight optimization, artifact save/load/predict
 │   ├── validation.py             # Stratified OOF and chronological validation
+│   ├── calibration.py            # Calibration curve/Brier score and cost-aware threshold selection
 │   ├── reporting.py              # Submission writer and validation report writer
 │   ├── train.py                  # Reproducible training entry point
 │   └── predict_test.py           # Kaggle test-set submission generator
@@ -137,9 +138,11 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 
 Training writes `reports/oof_predictions.csv` with one OOF row and fold assignment per selection row, plus `reports/validation_report.json` with OOF fold metrics, time-validation scores, untouched-holdout scores, blend weights, runtime, and a training fingerprint. Time-validation blend scores use fixed equal weights; OOF-selected weights are assessed on the untouched stratified holdout. The OOF blend score is a selection metric, not an unbiased performance estimate.
 
+The same untouched holdout is also used for calibration and threshold selection (`src/calibration.py`): the report's `calibration` block gives the Brier score and Expected Calibration Error, and `threshold_selection` gives the full precision/recall/F1/expected-cost curve across candidate thresholds plus the one that was selected. That selected threshold is saved as `decision_threshold` in the artifact metadata and is what `app.py` uses at serving time — override the cost assumptions behind it via `evaluation.cost_false_negative` / `evaluation.cost_false_positive` in `config.yaml` before retraining if your real fraud/false-positive costs differ from the illustrative 5:1 default.
+
 The submission command joins the test identity table, scores the Kaggle test rows with the saved full-train artifact, validates probabilities and IDs against `sample_submission.csv`, and writes exactly `TransactionID,isFraud` in sample order. It does not use test labels. Kaggle public and private leaderboard scores remain unset until a submission is uploaded.
 
-The service loads `models/fraud_ensemble.joblib` by default. Set `FRAUD_ARTIFACT_PATH` to use another artifact. Send one transaction JSON object to `POST /predict`; the response contains `fraud_probability`. `GET /health` reports whether the artifact loaded successfully.
+The service loads `models/fraud_ensemble.joblib` by default. Set `FRAUD_ARTIFACT_PATH` to use another artifact. Send one transaction JSON object to `POST /predict`; the response contains `fraud_probability`, `predicted_label` (thresholded at the artifact's `decision_threshold`, falling back to `FRAUD_DECISION_THRESHOLD`/0.5 if the artifact predates this feature), and `threshold_used`. `GET /health` reports whether the artifact loaded successfully.
 
 ## Continuous Integration
 
