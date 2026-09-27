@@ -1,5 +1,7 @@
 # IEEE-CIS Fraud Detection
 
+[![Tests](https://github.com/sharmaJaideep/kaggle_fraud_IEEE_CIS/actions/workflows/tests.yml/badge.svg)](https://github.com/sharmaJaideep/kaggle_fraud_IEEE_CIS/actions/workflows/tests.yml)
+
 ## Executive Summary & Project Intention
 
 This repository provides a reproducible machine learning foundation for the Kaggle IEEE-CIS Fraud Detection competition. The objective is to identify fraudulent online transactions from joined transaction and identity signals while keeping data preparation, validation, and model artifacts auditable.
@@ -28,7 +30,7 @@ The baseline has grown from a single fast gradient-boosted model into a validati
 - **Submission generation** (`src/predict_test.py`, `src/reporting.py`) — scores the Kaggle test set with the saved artifact and writes a schema- and order-validated `submission.csv`.
 - **Serving** (`app.py`) — a FastAPI app exposing `/health`, `/model-info`, `/predict`, and `/predict_batch`.
 - **Tests** (`tests/test_project_quality.py`) — 7 passing tests covering the feature engineer, OOF/blend-weight logic, time-based validation, hyperparameter-tuning wiring, a full synthetic train → artifact → submission pipeline, and the API contract.
-- **Continuous integration** (`.github/workflows/tests.yml`) — runs `pytest tests/ -v` on every push and pull request targeting `main` (Python 3.11, dependencies from `requirements.txt`). The suite is self-contained (synthetic data via `tmp_path`), so it needs no Kaggle CSVs or pre-trained artifact.
+- **Continuous integration** (`.github/workflows/tests.yml`) — runs `python -m pytest tests/ -v` on every push and pull request targeting `main` (Python 3.11, dependencies from `requirements.txt`). The suite is self-contained (synthetic data via `tmp_path`), so it needs no Kaggle CSVs or pre-trained artifact. See [Continuous Integration](#continuous-integration) below for what it checks and why it's set up the way it is.
 - A trained artifact already exists locally at `models/fraud_ensemble.joblib` (~12 MB) from a prior run. Model artifacts and validation reports are gitignored as generated outputs, so they are reproduced locally via the commands below rather than committed.
 
 **Not yet done:**
@@ -138,6 +140,23 @@ Training writes `reports/oof_predictions.csv` with one OOF row and fold assignme
 The submission command joins the test identity table, scores the Kaggle test rows with the saved full-train artifact, validates probabilities and IDs against `sample_submission.csv`, and writes exactly `TransactionID,isFraud` in sample order. It does not use test labels. Kaggle public and private leaderboard scores remain unset until a submission is uploaded.
 
 The service loads `models/fraud_ensemble.joblib` by default. Set `FRAUD_ARTIFACT_PATH` to use another artifact. Send one transaction JSON object to `POST /predict`; the response contains `fraud_probability`. `GET /health` reports whether the artifact loaded successfully.
+
+## Continuous Integration
+
+Every push and pull request to `main` triggers `.github/workflows/tests.yml`, which spins up a clean Ubuntu runner on Python 3.11, installs `requirements.txt`, and runs the full test suite. This is the project's safety net: nobody has to remember to run `pytest` by hand before merging, and a regression in the feature engineer, blend-weight logic, validation, artifact contract, or API shows up as a failed check within a couple of minutes rather than being discovered later.
+
+To reproduce the CI run locally:
+
+```bash
+python -m pytest tests/ -v
+```
+
+Two things matter here that are easy to get wrong:
+
+- **Use `python -m pytest`, not a bare `pytest` invocation.** Since `tests/` has no `__init__.py`, plain `pytest tests/` does not add the repository root to `sys.path`, so `from app import app` fails with `ModuleNotFoundError` even though the exact same tests pass under `python -m pytest`. This bit the CI workflow itself before it was corrected.
+- **`requirements.txt` must include everything the tests need, including `pytest` and `httpx`.** A dependency that's only installed by hand in a local virtual environment (and never added to `requirements.txt`) will work for you and silently fail on any fresh machine, including CI runners and new contributors' setups.
+
+The suite generates its own synthetic CSVs under `tmp_path` for the end-to-end training/submission test, so CI needs neither the Kaggle dataset nor a pre-trained `models/fraud_ensemble.joblib` artifact to pass.
 
 ## Notes on Scale and Reproducibility
 
