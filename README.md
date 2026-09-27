@@ -28,12 +28,12 @@ The baseline has grown from a single fast gradient-boosted model into a validati
 - **Submission generation** (`src/predict_test.py`, `src/reporting.py`) — scores the Kaggle test set with the saved artifact and writes a schema- and order-validated `submission.csv`.
 - **Serving** (`app.py`) — a FastAPI app exposing `/health`, `/model-info`, `/predict`, and `/predict_batch`.
 - **Tests** (`tests/test_project_quality.py`) — 7 passing tests covering the feature engineer, OOF/blend-weight logic, time-based validation, hyperparameter-tuning wiring, a full synthetic train → artifact → submission pipeline, and the API contract.
+- **Continuous integration** (`.github/workflows/tests.yml`) — runs `pytest tests/ -v` on every push and pull request targeting `main` (Python 3.11, dependencies from `requirements.txt`). The suite is self-contained (synthetic data via `tmp_path`), so it needs no Kaggle CSVs or pre-trained artifact.
 - A trained artifact already exists locally at `models/fraud_ensemble.joblib` (~12 MB) from a prior run. Model artifacts and validation reports are gitignored as generated outputs, so they are reproduced locally via the commands below rather than committed.
 
 **Not yet done:**
 
 - No EDA summary or figures are committed under `reports/`, despite being part of the intended workflow below.
-- No CI workflow runs the test suite automatically on push/PR.
 - No calibration analysis or business-facing decision-threshold study yet, beyond the fixed default threshold used by the API.
 - Kaggle public/private leaderboard scores are unset (`null` placeholders in `validation_report.json`) — no submission has been uploaded to the competition.
 
@@ -41,8 +41,7 @@ The baseline has grown from a single fast gradient-boosted model into a validati
 
 1. Run and commit an EDA summary (target prevalence, missingness, cardinality, train/test drift) under `reports/`.
 2. Upload a submission to Kaggle and record the public/private leaderboard AUC in `validation_report.json`.
-3. Add a GitHub Actions (or equivalent) workflow to run `pytest` on every push/PR.
-4. Add calibration diagnostics and a threshold-selection analysis to support a real deployment decision, not just the default 0.5 cutoff.
+3. Add calibration diagnostics and a threshold-selection analysis to support a real deployment decision, not just the default 0.5 cutoff.
 
 ## Project Structure
 
