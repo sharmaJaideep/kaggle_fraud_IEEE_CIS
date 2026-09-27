@@ -46,11 +46,31 @@ evaluation:
   # Step size when sweeping candidate thresholds between 0 and 1.
   threshold_resolution: 0.01
 
-# Ablation flags for TransactionFeatureEngineer (src/features/preprocessing.py).
-# All default to true (matching normal behavior) if omitted; set any to false
-# to isolate its effect, e.g. for an ablation study. See README for context on
-# why these were added (adversarial validation found real train/test drift).
+# Feature-engineering flags for TransactionFeatureEngineer (src/features/
+# preprocessing.py). All default to true in the class itself if omitted here;
+# the values below are the empirically best combination found via a dedicated
+# ablation study on time-based validation AUC (see README), not just the
+# "everything on" default. Flip any to test its effect in isolation.
 features:
+  # uid (client identity reconstructed from card/addr columns + a D1-derived
+  # day offset) turned out to be the dominant cause of a ~2-point time-based
+  # AUC regression: it's extremely high-cardinality, so within a smaller
+  # chronological training split its group-stat aggregates are mostly noise
+  # from single-occurrence groups rather than a stable generalizable signal.
+  # Disabling it recovered the regression and then some (0.9026 -> 0.9238).
+  enable_uid_reconstruction: false
+  # Moot while enable_uid_reconstruction is false (no uid column exists to
+  # compute a time gap for); left true for whenever uid reconstruction is
+  # revisited with a leakage-safe, expanding-window implementation.
   enable_uid_time_features: true
-  enable_v_column_pruning: true
-  drop_raw_id_columns: true
+  # Dropping raw card1/card2/addr1 and pruning correlated V-columns were both
+  # motivated by adversarial validation (they help a model tell train and test
+  # apart), but ablation showed both are mildly *negative* for time-based AUC
+  # here - being train/test-distinguishable doesn't mean a column lacks real
+  # predictive signal. Keeping them scored best (0.9238 -> 0.9248).
+  enable_v_column_pruning: false
+  drop_raw_id_columns: false
+  # D-column detrending (Dn - TransactionDT/86400) is a confirmed, clean win -
+  # disabling it alone dropped AUC to 0.8996, well below even the regressed
+  # baseline. Genuine time drift, correctly fixed.
+  enable_d_column_detrending: true
