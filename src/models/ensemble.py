@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pickle
+from typing import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -100,34 +101,36 @@ def fit_validation_weighted_ensemble(
 
 
 def optimize_oof_blend_weights(oof_predictions: dict[str, np.ndarray], y_true: np.ndarray) -> tuple[dict[str, float], float]:
-    """Optimize a non-negative OOF blend that sums to one using ROC-AUC."""
+    """Search a non-negative weight simplex using OOF ROC-AUC."""
     if not oof_predictions:
         raise ValueError("Need at least one model prediction array")
 
     names = list(oof_predictions)
     y_true = np.asarray(y_true).reshape(-1)
+    if len(np.unique(y_true)) < 2:
+        raise ValueError("OOF blend optimization requires both target classes")
+    predictions = {name: np.asarray(values, dtype="float64").reshape(-1) for name, values in oof_predictions.items()}
+    if any(len(values) != len(y_true) for values in predictions.values()):
+        raise ValueError("Every OOF prediction array must match the target length")
+    if any(not np.isfinite(values).all() for values in predictions.values()):
+        raise ValueError("OOF predictions must contain only finite values")
+
+    resolution = 20
+
+    def compositions(total: int, parts: int, prefix: tuple[int, ...] = ()) -> Iterator[tuple[int, ...]]:
+        if parts == 1:
+            yield prefix + (total,)
+            return
+        for value in range(total + 1):
+            yield from compositions(total - value, parts - 1, prefix + (value,))
+
     best_score = -np.inf
     best_weights = {name: 1.0 / len(names) for name in names}
-
-    grid = np.linspace(0.0, 1.0, 101)
-    for weights in [(w0, 1.0 - w0) for w0 in grid]:
-        candidate = {names[0]: float(weights[0]), names[1]: float(weights[1])} if len(names) == 2 else {name: 0.0 for name in names}
-        if len(names) > 2:
-            candidate[names[0]] = 1.0
-            candidate[names[1]] = 0.0
-            for idx in range(2, len(names)):
-                candidate[names[idx]] = 0.0
-            candidate[names[0]] = 1.0 / len(names)
-            candidate[names[1]] = 1.0 / len(names)
-            remaining = 1.0 - sum(candidate.values())
-            if len(names) > 2:
-                candidate[names[-1]] += remaining
-
-        if abs(sum(candidate.values()) - 1.0) > 1e-6:
-            continue
+    for integer_weights in compositions(resolution, len(names)):
+        candidate = {name: value / resolution for name, value in zip(names, integer_weights)}
         blended = np.zeros_like(y_true, dtype="float64")
         for name in names:
-            blended += candidate[name] * oof_predictions[name]
+            blended += candidate[name] * predictions[name]
         blended = np.clip(blended, 0.0, 1.0)
         score = float(roc_auc_score(y_true, blended))
         if score > best_score:
@@ -183,6 +186,6 @@ def predict_artifact(artifact: dict[str, Any], records: Any) -> np.ndarray:
     transformed = artifact["transformer"].transform(records)
     predictions = np.zeros(len(transformed), dtype="float64")
     for name, model in artifact["models"].items():
-        model_predictions = model.predict_proba(transformed.to_numpy() if hasattr(transformed, "to_numpy") else transformed)
+        model_predictions = model.predict_proba(transformed)
         predictions += artifact["weights"][name] * model_predictions[:, 1]
     return np.clip(predictions, 0.0, 1.0)

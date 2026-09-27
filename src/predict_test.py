@@ -6,8 +6,8 @@ import argparse
 from pathlib import Path
 
 import pandas as pd
+import yaml
 
-from src.data.loading import load_training_data
 from src.models.ensemble import load_artifact, predict_artifact
 from src.reporting import generate_submission_file
 
@@ -17,24 +17,23 @@ def generate_submission(
     artifact_path: str | Path = "models/fraud_ensemble.joblib",
     output_path: str | Path = "reports/submission.csv",
 ) -> pd.DataFrame:
-    config = __import__("yaml").safe_load(Path(config_path).read_text())
+    with Path(config_path).open() as config_file:
+        config = yaml.safe_load(config_file)
     data_config = config["data"]
     raw_dir = data_config["raw_dir"]
-    transactions = pd.read_csv(Path(raw_dir) / "test_transaction.csv")
-    identity = pd.read_csv(Path(raw_dir) / "test_identity.csv")
-    test_frame = transactions.merge(identity, on="TransactionID", how="left", validate="one_to_one")
-    sample_submission = pd.read_csv(Path(raw_dir) / "sample_submission.csv")
+    transactions = pd.read_csv(Path(raw_dir) / data_config.get("test_transaction", "test_transaction.csv"))
+    identity = pd.read_csv(Path(raw_dir) / data_config.get("test_identity", "test_identity.csv"))
+    id_column = data_config["id_column"]
+    test_frame = transactions.merge(identity, on=id_column, how="left", validate="one_to_one")
+    sample_submission = pd.read_csv(Path(raw_dir) / data_config.get("sample_submission", "sample_submission.csv"))
     artifact = load_artifact(artifact_path)
     predictions = predict_artifact(artifact, test_frame)
-    submission = generate_submission_file(predictions=pd.Series(predictions), transaction_ids=test_frame["TransactionID"], destination=output_path)
-
-    if len(submission) != len(sample_submission):
-        raise ValueError(f"Submission row count mismatch: expected {len(sample_submission)}, got {len(submission)}")
-    if not submission["TransactionID"].equals(sample_submission["TransactionID"]):
-        raise ValueError("Submission TransactionID values do not match sample_submission.csv")
-    if submissions_invalid := submission["isFraud"].isna().any() or ((submission["isFraud"] < 0) | (submission["isFraud"] > 1)).any():
-        raise ValueError("Submission probabilities are invalid")
-    return submission
+    return generate_submission_file(
+        predictions=pd.Series(predictions),
+        transaction_ids=test_frame[id_column],
+        destination=output_path,
+        sample_submission=sample_submission,
+    )
 
 
 if __name__ == "__main__":
