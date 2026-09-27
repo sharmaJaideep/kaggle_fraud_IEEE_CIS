@@ -26,6 +26,7 @@ def kfold_oof_validation(
     n_splits: int = 5,
     random_state: int = 42,
     id_column: str = "TransactionID",
+    feature_flags: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fit each model on K folds and collect OOF predictions for every row."""
     labels = target.to_numpy() if isinstance(target, pd.Series) else np.asarray(target)
@@ -54,7 +55,7 @@ def kfold_oof_validation(
         oof_seen[valid_idx] += 1
         oof_folds[valid_idx] = fold_number
 
-        transformer = TransactionFeatureEngineer(id_column=id_column).fit(train_frame)
+        transformer = TransactionFeatureEngineer(id_column=id_column, **(feature_flags or {})).fit(train_frame)
         X_train = transformer.transform(train_frame)
         X_valid = transformer.transform(valid_frame)
 
@@ -99,6 +100,7 @@ def time_based_validation(
     random_state: int = 42,
     blend_weights: dict[str, float] | None = None,
     id_column: str = "TransactionID",
+    feature_flags: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Evaluate models on a chronological split based on TransactionDT."""
     if "TransactionDT" not in frame.columns:
@@ -123,7 +125,7 @@ def time_based_validation(
     y_train = labels[train_indices]
     y_valid = labels[valid_indices]
 
-    transformer = TransactionFeatureEngineer(id_column=id_column).fit(train_frame)
+    transformer = TransactionFeatureEngineer(id_column=id_column, **(feature_flags or {})).fit(train_frame)
     X_train = transformer.transform(train_frame)
     X_valid = transformer.transform(valid_frame)
 

@@ -52,6 +52,7 @@ def train(config_path: str | Path = "config/config.yaml", artifact_path: str | P
     model_settings = config.get("model", {})
     model_names = model_settings.get("models", list(DEFAULT_MODEL_CONFIGS))
     id_column = data_config["id_column"]
+    feature_flags: dict[str, bool] = config.get("features", {})
 
     tune_hyperparameters = bool(model_settings.get("tune_hyperparameters", True))
     tuning_scores: dict[str, float] | None = None
@@ -63,7 +64,7 @@ def train(config_path: str | Path = "config/config.yaml", artifact_path: str | P
         )
         tune_train_frame = selection_frame.iloc[tune_train_idx].copy()
         tune_valid_frame = selection_frame.iloc[tune_valid_idx].copy()
-        tuning_transformer = TransactionFeatureEngineer(id_column).fit(tune_train_frame)
+        tuning_transformer = TransactionFeatureEngineer(id_column, **feature_flags).fit(tune_train_frame)
         tune_train_features = tuning_transformer.transform(tune_train_frame)
         tune_valid_features = tuning_transformer.transform(tune_valid_frame)
         candidate_pool = model_settings.get("tuning_candidates") or DEFAULT_TUNING_CANDIDATES
@@ -92,6 +93,7 @@ def train(config_path: str | Path = "config/config.yaml", artifact_path: str | P
         n_splits=fold_count,
         random_state=seed,
         id_column=id_column,
+        feature_flags=feature_flags,
     )
     oof_predictions = oof_result["oof_predictions"]
     blend_weights, selected_oof_auc = optimize_oof_blend_weights(oof_predictions, selection_target)
@@ -102,9 +104,10 @@ def train(config_path: str | Path = "config/config.yaml", artifact_path: str | P
         model_configs,
         random_state=seed,
         id_column=id_column,
+        feature_flags=feature_flags,
     )
 
-    selection_transformer = TransactionFeatureEngineer(id_column).fit(selection_frame)
+    selection_transformer = TransactionFeatureEngineer(id_column, **feature_flags).fit(selection_frame)
     selection_features = selection_transformer.transform(selection_frame)
     holdout_features = selection_transformer.transform(holdout_frame)
     selection_class_weight = float((selection_target == 0).sum() / max((selection_target == 1).sum(), 1))
@@ -144,7 +147,7 @@ def train(config_path: str | Path = "config/config.yaml", artifact_path: str | P
         row for row in threshold_curve if abs(row["threshold"] - selected_threshold) < 1e-9
     )
 
-    final_transformer = TransactionFeatureEngineer(id_column).fit(frame)
+    final_transformer = TransactionFeatureEngineer(id_column, **feature_flags).fit(frame)
     final_features = final_transformer.transform(frame)
     full_class_weight = float((target.to_numpy() == 0).sum() / max((target.to_numpy() == 1).sum(), 1))
     final_models = {}
@@ -189,6 +192,7 @@ def train(config_path: str | Path = "config/config.yaml", artifact_path: str | P
             "curve": threshold_curve,
         },
         "feature_version": "features-v1",
+        "feature_flags": feature_flags,
         "training_fingerprint": hashlib.sha256(
             pd.util.hash_pandas_object(pd.DataFrame({id_column: frame[id_column], data_config["target_column"]: target}), index=False).values.tobytes()
         ).hexdigest(),
@@ -244,6 +248,7 @@ def train(config_path: str | Path = "config/config.yaml", artifact_path: str | P
             "curve": threshold_curve,
         },
         "feature_count": int(final_features.shape[1]),
+        "feature_flags": feature_flags,
         "model_configs": model_configs,
         "training_seconds": elapsed,
         "training_fingerprint": artifact_metadata["training_fingerprint"],

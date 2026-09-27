@@ -17,9 +17,21 @@ class TransactionFeatureEngineer(BaseEstimator, TransformerMixin):
     transformer suitable for both batch validation and one-row API requests.
     """
 
-    def __init__(self, id_column: str = "TransactionID", v_correlation_threshold: float = 0.95) -> None:
+    def __init__(
+        self,
+        id_column: str = "TransactionID",
+        v_correlation_threshold: float = 0.95,
+        enable_uid_time_features: bool = True,
+        enable_v_column_pruning: bool = True,
+        drop_raw_id_columns: bool = True,
+    ) -> None:
         self.id_column = id_column
         self.v_correlation_threshold = v_correlation_threshold
+        # Ablation flags so each adversarial-validation-motivated change can be
+        # isolated and measured independently rather than only all-at-once.
+        self.enable_uid_time_features = enable_uid_time_features
+        self.enable_v_column_pruning = enable_v_column_pruning
+        self.drop_raw_id_columns = drop_raw_id_columns
         self.group_columns = ("card1", "card2", "addr1", "P_emaildomain", "ProductCD", "uid")
         self.interaction_columns = (
             ("card1", "addr1"),
@@ -120,7 +132,7 @@ class TransactionFeatureEngineer(BaseEstimator, TransformerMixin):
                 uid = uid + "_" + account_day.astype("string").fillna("__MISSING__")
             features["uid"] = uid
 
-            if "TransactionDT" in features:
+            if "TransactionDT" in features and self.enable_uid_time_features:
                 # Relative to whatever rows are in this transform() call, not full
                 # history: a single-row API payload has no prior transaction to compare
                 # against, and falls back to the fitted median via numeric_medians_.
@@ -135,7 +147,7 @@ class TransactionFeatureEngineer(BaseEstimator, TransformerMixin):
         return features
 
     def fit(self, X: pd.DataFrame, y: Any = None) -> "TransactionFeatureEngineer":
-        self.dropped_v_columns_ = self._select_v_columns_to_drop(X)
+        self.dropped_v_columns_ = self._select_v_columns_to_drop(X) if self.enable_v_column_pruning else []
         frame = self._base_features(X)
         self.input_columns_ = list(frame.columns)
         self.categorical_maps_: dict[str, dict[str, int]] = {}
@@ -186,7 +198,8 @@ class TransactionFeatureEngineer(BaseEstimator, TransformerMixin):
     def get_feature_names_out(self, input_features: Any = None) -> np.ndarray:
         if not hasattr(self, "input_columns_"):
             raise RuntimeError("TransactionFeatureEngineer must be fitted before feature names are requested.")
-        names = [name for name in self.input_columns_ if name not in self.raw_columns_to_drop]
+        excluded = self.raw_columns_to_drop if self.drop_raw_id_columns else ()
+        names = [name for name in self.input_columns_ if name not in excluded]
         names.extend(f"{column}__frequency" for column in self.frequency_maps_)
         for column, stats in self.group_stats_.items():
             names.extend(f"{column}__{statistic}" for statistic in stats.columns)

@@ -45,3 +45,12 @@ evaluation:
   cost_false_positive: 1.0
   # Step size when sweeping candidate thresholds between 0 and 1.
   threshold_resolution: 0.01
+
+# Ablation flags for TransactionFeatureEngineer (src/features/preprocessing.py).
+# All default to true (matching normal behavior) if omitted; set any to false
+# to isolate its effect, e.g. for an ablation study. See README for context on
+# why these were added (adversarial validation found real train/test drift).
+features:
+  enable_uid_time_features: true
+  enable_v_column_pruning: true
+  drop_raw_id_columns: true

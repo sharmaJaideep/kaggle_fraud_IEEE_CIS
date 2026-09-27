@@ -86,6 +86,48 @@ def test_uid_reconstruction_groups_shared_cards_and_tracks_time_since_last_trans
     assert np.isfinite(single_row["uid_seconds_since_last_transaction"].to_numpy()).all()
 
 
+def test_ablation_flags_each_independently_disable_their_behavior():
+    rng = np.random.default_rng(9)
+    n = 200
+    base = rng.normal(0, 1, n)
+    frame = pd.DataFrame(
+        {
+            "TransactionID": np.arange(n),
+            "TransactionDT": np.arange(n) * 3600,
+            "isFraud": rng.integers(0, 2, n),
+            "TransactionAmt": rng.uniform(5, 200, n),
+            "card1": np.tile(np.arange(1, 11), n // 10),
+            "card2": np.tile(np.arange(1, 11), n // 10),
+            "addr1": np.tile(np.arange(1, 11), n // 10),
+            "V1": base,
+            "V2": base + rng.normal(0, 1e-4, n),
+        }
+    )
+
+    default_transformer = TransactionFeatureEngineer().fit(frame)
+    default_columns = set(default_transformer.transform(frame).columns)
+    assert "uid_seconds_since_last_transaction" in default_columns
+    assert "V2" not in default_columns
+    assert "card1" not in default_columns
+
+    no_uid_time = TransactionFeatureEngineer(enable_uid_time_features=False).fit(frame)
+    no_uid_time_columns = set(no_uid_time.transform(frame).columns)
+    assert "uid_seconds_since_last_transaction" not in no_uid_time_columns
+    assert "uid_transactions_seen_before" not in no_uid_time_columns
+    assert any(name.startswith("uid__") for name in no_uid_time_columns)  # uid grouping still active
+
+    no_v_pruning = TransactionFeatureEngineer(enable_v_column_pruning=False).fit(frame)
+    assert no_v_pruning.dropped_v_columns_ == []
+    no_v_pruning_columns = set(no_v_pruning.transform(frame).columns)
+    assert "V2" in no_v_pruning_columns
+
+    keep_raw_ids = TransactionFeatureEngineer(drop_raw_id_columns=False).fit(frame)
+    keep_raw_ids_columns = set(keep_raw_ids.transform(frame).columns)
+    assert "card1" in keep_raw_ids_columns
+    assert "card2" in keep_raw_ids_columns
+    assert "addr1" in keep_raw_ids_columns
+
+
 def test_artifact_round_trip_and_predictions_are_valid():
     train = _make_frame(80, fraud_rate=0.25)
     transformer = TransactionFeatureEngineer().fit(train)
