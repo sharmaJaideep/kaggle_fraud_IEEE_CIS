@@ -11,10 +11,17 @@ data:
 
 validation:
   test_size: 0.20
+  # Fraction of the selection partition carved out for hyperparameter tuning.
+  tuning_size: 0.20
 
 model:
   name: validation_weighted_ensemble
   models: [lightgbm, xgboost, catboost]
+  # When true, hyperparameters are chosen per booster via tune_model_configs
+  # (src/models/ensemble.py) on the tuning split above, instead of using the
+  # fixed values below. Set false to use n_estimators/learning_rate/num_leaves
+  # directly for every booster.
+  tune_hyperparameters: true
   n_estimators: 500
   learning_rate: 0.04
   num_leaves: 63

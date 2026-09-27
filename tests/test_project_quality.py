@@ -1,11 +1,16 @@
+import json
+
 import numpy as np
 import pandas as pd
+import yaml
 from fastapi.testclient import TestClient
 
 from app import app
 from src.features.preprocessing import TransactionFeatureEngineer
 from src.models.ensemble import load_artifact, optimize_oof_blend_weights, predict_artifact, save_artifact
-from src.validation import kfold_oof_validation
+from src.predict_test import generate_submission
+from src.train import train
+from src.validation import kfold_oof_validation, time_based_validation
 
 
 def _make_frame(rows=40, fraud_rate=0.2):
@@ -79,6 +84,163 @@ def test_kfold_oof_validation_and_blend_optimization():
     weights, score = optimize_oof_blend_weights(result["oof_predictions"], target.to_numpy())
     assert abs(sum(weights.values()) - 1.0) < 1e-6
     assert 0.0 <= score <= 1.0
+
+    labels = np.tile([0, 1], 30)
+    perfect = np.where(labels == 1, 0.9, 0.1)
+    inverted = 1.0 - perfect
+    weights, score = optimize_oof_blend_weights(
+        {"best": perfect, "weak": inverted, "also_weak": inverted}, labels
+    )
+    assert weights["best"] >= 0.55
+    assert score == 1.0
+
+
+def test_time_validation_keeps_chronological_boundary():
+    frame = _make_frame(100, fraud_rate=0.4)
+    frame["TransactionDT"] = np.repeat(np.arange(20), 5)
+    target = frame.pop("isFraud")
+    shuffled = np.random.default_rng(11).permutation(len(frame))
+    frame = frame.iloc[shuffled].reset_index(drop=True)
+    target = target.iloc[shuffled].reset_index(drop=True)
+
+    result = time_based_validation(
+        frame,
+        target,
+        {"lightgbm": {"n_estimators": 5, "num_leaves": 7}},
+        random_state=7,
+    )
+
+    assert result["train_max_time"] < result["valid_min_time"]
+    assert result["valid_min_time"] == result["split_threshold"]
+    assert result["train_rows"] + result["valid_rows"] == len(frame)
+    assert "blend" in result["summary"]
+    assert result["blend_weights"] == {"lightgbm": 1.0}
+
+
+def test_training_to_kaggle_submission_pipeline(tmp_path):
+    raw_dir = tmp_path / "data"
+    raw_dir.mkdir()
+    train_rows = 100
+    train_data = pd.DataFrame(
+        {
+            "TransactionID": np.arange(1, train_rows + 1),
+            "TransactionDT": np.arange(train_rows) * 3600,
+            "TransactionAmt": np.linspace(5.0, 150.0, train_rows),
+            "card1": np.tile(np.arange(10, 20), train_rows // 10),
+            "isFraud": np.tile([0, 0, 0, 1, 0], train_rows // 5),
+        }
+    )
+    train_data.to_csv(raw_dir / "train_transaction.csv", index=False)
+    pd.DataFrame({"TransactionID": train_data["TransactionID"], "DeviceType": "mobile"}).to_csv(
+        raw_dir / "train_identity.csv", index=False
+    )
+
+    test_ids = np.arange(1001, 1013)
+    pd.DataFrame(
+        {
+            "TransactionID": test_ids,
+            "TransactionDT": np.arange(train_rows, train_rows + len(test_ids)) * 3600,
+            "TransactionAmt": np.linspace(20.0, 80.0, len(test_ids)),
+            "card1": np.tile(np.arange(10, 16), 2),
+        }
+    ).to_csv(raw_dir / "test_transaction.csv", index=False)
+    pd.DataFrame({"TransactionID": test_ids, "DeviceType": "mobile"}).to_csv(
+        raw_dir / "test_identity.csv", index=False
+    )
+    pd.DataFrame({"TransactionID": test_ids[::-1], "isFraud": 0.0}).to_csv(
+        raw_dir / "sample_submission.csv", index=False
+    )
+
+    report_path = tmp_path / "validation.json"
+    oof_path = tmp_path / "oof.csv"
+    config = {
+        "project": {"random_seed": 7},
+        "data": {
+            "raw_dir": str(raw_dir),
+            "train_transaction": "train_transaction.csv",
+            "train_identity": "train_identity.csv",
+            "target_column": "isFraud",
+            "id_column": "TransactionID",
+        },
+        "validation": {"test_size": 0.2, "n_splits": 3},
+        "model": {"models": ["lightgbm"], "tune_hyperparameters": False, "n_estimators": 8, "learning_rate": 0.1},
+        "reports": {"validation_report": str(report_path), "oof_predictions": str(oof_path)},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    artifact_path = tmp_path / "final.joblib"
+
+    train(config_path, artifact_path)
+    artifact = load_artifact(artifact_path)
+    oof = pd.read_csv(oof_path)
+    assert artifact["metadata"]["training_rows"] == train_rows
+    assert len(oof) == int(train_rows * 0.8)
+    assert set(oof["fold"]) == {1, 2, 3}
+    assert report_path.exists()
+
+    submission_path = tmp_path / "submission.csv"
+    submission = generate_submission(config_path, artifact_path, submission_path)
+    assert submission["TransactionID"].tolist() == test_ids[::-1].tolist()
+    assert len(submission) == len(test_ids)
+    assert submission["isFraud"].between(0, 1).all()
+
+
+def test_train_selects_hyperparameters_via_tuning_when_enabled(tmp_path):
+    raw_dir = tmp_path / "data"
+    raw_dir.mkdir()
+    rows = 200
+    train_data = pd.DataFrame(
+        {
+            "TransactionID": np.arange(1, rows + 1),
+            "TransactionDT": np.arange(rows) * 3600,
+            "TransactionAmt": np.linspace(5.0, 150.0, rows),
+            "card1": np.tile(np.arange(10, 20), rows // 10),
+            "isFraud": np.tile([0, 0, 0, 1, 0], rows // 5),
+        }
+    )
+    train_data.to_csv(raw_dir / "train_transaction.csv", index=False)
+    pd.DataFrame({"TransactionID": train_data["TransactionID"], "DeviceType": "mobile"}).to_csv(
+        raw_dir / "train_identity.csv", index=False
+    )
+
+    report_path = tmp_path / "validation.json"
+    oof_path = tmp_path / "oof.csv"
+    candidates = {
+        "lightgbm": [
+            {"n_estimators": 3, "learning_rate": 0.3, "num_leaves": 7},
+            {"n_estimators": 6, "learning_rate": 0.1, "num_leaves": 15},
+        ]
+    }
+    config = {
+        "project": {"random_seed": 5},
+        "data": {
+            "raw_dir": str(raw_dir),
+            "train_transaction": "train_transaction.csv",
+            "train_identity": "train_identity.csv",
+            "target_column": "isFraud",
+            "id_column": "TransactionID",
+        },
+        "validation": {"test_size": 0.2, "n_splits": 3, "tuning_size": 0.25},
+        "model": {"models": ["lightgbm"], "tune_hyperparameters": True, "tuning_candidates": candidates},
+        "reports": {"validation_report": str(report_path), "oof_predictions": str(oof_path)},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    artifact_path = tmp_path / "final.joblib"
+
+    train(config_path, artifact_path)
+    artifact = load_artifact(artifact_path)
+
+    selected_config = artifact["metadata"]["model_configs"]["lightgbm"]
+    assert selected_config in candidates["lightgbm"]
+    tuning_info = artifact["metadata"]["hyperparameter_tuning"]
+    assert tuning_info["enabled"] is True
+    assert tuning_info["tuning_rows"] > 0
+    assert "lightgbm" in tuning_info["scores"]
+
+    report = json.loads(report_path.read_text())
+    assert report["hyperparameter_tuning"]["enabled"] is True
+    assert report["model_configs"]["lightgbm"] == selected_config
 
 
 def test_api_supports_health_and_prediction_contract():

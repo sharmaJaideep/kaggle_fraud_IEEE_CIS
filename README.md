@@ -24,15 +24,15 @@ The baseline has grown from a single fast gradient-boosted model into a validati
 - **Ensembling** (`src/models/ensemble.py`) — blend weights are chosen by grid-searching the weight simplex against out-of-fold predictions (`optimize_oof_blend_weights`), and the fitted transformer, models, weights, and metadata are serialized into a single deployable artifact (`save_artifact` / `load_artifact` / `predict_artifact`).
 - **Validation** (`src/validation.py`) — stratified K-fold OOF validation (every row scored exactly once, out-of-fold) and a chronological (`TransactionDT`-ordered) 80/20 split to catch temporal drift that a random split would hide.
 - **Training entry point** (`src/train.py`) — holds out an untouched stratified partition, tunes blend weights via OOF on the remainder, evaluates on the untouched holdout and a time-based split, then refits final models on all labeled rows for the deployed artifact. Emits `reports/oof_predictions.csv` and `reports/validation_report.json` (per-fold metrics, blend weights, training fingerprint, runtime).
+- **Hyperparameter tuning** (`src/train.py`, `tune_model_configs` in `src/models/ensemble.py`) — before OOF validation, a further stratified split is carved from the selection partition, and each booster's hyperparameters are chosen from a candidate pool (`DEFAULT_TUNING_CANDIDATES`, or a `model.tuning_candidates` override in config) by validation ROC-AUC. Controlled by `model.tune_hyperparameters` in `config.yaml` (default `true`); set to `false` to use the fixed `n_estimators`/`learning_rate`/`num_leaves` values instead. The selected configs and their tuning scores are persisted in both the artifact metadata and `validation_report.json` under `hyperparameter_tuning`.
 - **Submission generation** (`src/predict_test.py`, `src/reporting.py`) — scores the Kaggle test set with the saved artifact and writes a schema- and order-validated `submission.csv`.
 - **Serving** (`app.py`) — a FastAPI app exposing `/health`, `/model-info`, `/predict`, and `/predict_batch`.
-- **Tests** (`tests/test_project_quality.py`) — 6 passing tests covering the feature engineer, OOF/blend-weight logic, time-based validation, a full synthetic train → artifact → submission pipeline, and the API contract.
+- **Tests** (`tests/test_project_quality.py`) — 7 passing tests covering the feature engineer, OOF/blend-weight logic, time-based validation, hyperparameter-tuning wiring, a full synthetic train → artifact → submission pipeline, and the API contract.
 - A trained artifact already exists locally at `models/fraud_ensemble.joblib` (~12 MB) from a prior run. Model artifacts and validation reports are gitignored as generated outputs, so they are reproduced locally via the commands below rather than committed.
 
 **Not yet done:**
 
 - No EDA summary or figures are committed under `reports/`, despite being part of the intended workflow below.
-- Hyperparameter search exists as a helper (`tune_model_configs` in `src/models/ensemble.py`) but is not yet wired into `src/train.py`'s default run.
 - No CI workflow runs the test suite automatically on push/PR.
 - No calibration analysis or business-facing decision-threshold study yet, beyond the fixed default threshold used by the API.
 - Kaggle public/private leaderboard scores are unset (`null` placeholders in `validation_report.json`) — no submission has been uploaded to the competition.
@@ -40,10 +40,9 @@ The baseline has grown from a single fast gradient-boosted model into a validati
 ## Next Steps
 
 1. Run and commit an EDA summary (target prevalence, missingness, cardinality, train/test drift) under `reports/`.
-2. Wire `tune_model_configs` into `src/train.py` (or a dedicated tuning entry point) so hyperparameter selection is reproducible rather than manual.
-3. Upload a submission to Kaggle and record the public/private leaderboard AUC in `validation_report.json`.
-4. Add a GitHub Actions (or equivalent) workflow to run `pytest` on every push/PR.
-5. Add calibration diagnostics and a threshold-selection analysis to support a real deployment decision, not just the default 0.5 cutoff.
+2. Upload a submission to Kaggle and record the public/private leaderboard AUC in `validation_report.json`.
+3. Add a GitHub Actions (or equivalent) workflow to run `pytest` on every push/PR.
+4. Add calibration diagnostics and a threshold-selection analysis to support a real deployment decision, not just the default 0.5 cutoff.
 
 ## Project Structure
 
