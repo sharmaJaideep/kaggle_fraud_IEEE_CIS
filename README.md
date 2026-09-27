@@ -41,27 +41,26 @@ The baseline has grown from a single fast gradient-boosted model into a validati
 
   | Run | Holdout AUC | Time-based AUC | Kaggle public / private |
   |---|---|---|---|
-  | 1. Original (pre-uid) | 0.9643 | 0.9222 | 0.937 / 0.897 |
+  | 1. Original (pre-uid) | 0.9643 | 0.9222 | 0.9366 / 0.8974 |
   | 2. All adversarial-validation fixes on at once | 0.9635 | 0.9026 (regression) | not submitted |
-  | 3. **Ablation-optimal defaults (current)** | **0.9672** | **0.9248** | not yet submitted |
+  | 3. **Ablation-optimal defaults (current)** | **0.9672** | **0.9248** | **0.9388 / 0.9016** |
 
-  Run 3 improves on run 1 on *both* the optimistic holdout metric and the more honest time-based metric — a good sign it's a genuine improvement rather than overfitting to one validation scheme. Its time-based figure (0.9248) exactly matches the standalone ablation study's best combination, a useful cross-check that the ablation script and the real pipeline agree. Calibration also improved over run 1 (Brier 0.0457 vs 0.0476, ECE 0.1225 vs 0.1267). A fresh `reports/submission.csv` has been generated from this artifact but not yet uploaded to Kaggle — run 1's public/private scores above are from the *previous* artifact and no longer apply to the current one. This is recorded in `reports/validation_report.json`. For reference, this competition's top teams historically scored in roughly the 0.945 AUC range on the private leaderboard.
+  Run 3 improves on run 1 on *every* metric that was checked — holdout, time-based, and both real Kaggle scores — confirming the ablation study's fix generalizes rather than just overfitting one validation scheme. Its internal time-based figure (0.9248) exactly matched the standalone ablation study's prediction, and the real private-leaderboard gain (+0.0042) came in even larger than the internal time-based gain predicted (+0.0026) — a pleasant surprise, not a shortfall. Calibration also improved over run 1 (Brier 0.0457 vs 0.0476, ECE 0.1225 vs 0.1267). This is recorded in `reports/validation_report.json`. For reference, this competition's top teams historically scored in roughly the 0.945 AUC range on the private leaderboard — run 3 closes about a fifth of that gap (from ~4.8 points to ~4.3 points short).
 - **Adversarial validation** (`src/adversarial_validation.py`) — trains a classifier to distinguish real train rows from real test rows; a high OOF AUC means the two sets are genuinely different distributions, and its feature importances point at exactly which columns are driving that. Run against the real data, this came back **OOF AUC 1.0000** (fold AUCs all ≥0.99999) with two distinct causes: (1) the `D`-columns (`D3/D4/D5/D10/D11/D15`, not just `D1`) show large, systematic mean shifts and missingness-rate shifts from train to test — genuine time drift; (2) `card1`/`card2`/`addr1`/`TransactionAmt` are top-ranked despite having nearly identical train/test means — meaning a tree model is exploiting specific individual ID values rather than a real distribution shift, closer to memorization than signal. Both findings are saved to `reports/adversarial_validation.json` (gitignored, like other generated reports).
 
 **Not yet done:**
 
 - No EDA summary or figures are committed under `reports/`, despite being part of the intended workflow below.
 - Only a 2-candidate hyperparameter search per booster — a broader random/Bayesian search would likely help.
-- **The current artifact (run 3, ablation-optimal defaults) hasn't been submitted to Kaggle yet.** A fresh `reports/submission.csv` is ready; the public/private scores in the table above are from the older run 1 artifact and don't reflect the current one.
+- Still a ~4.3-point AUC gap to this competition's historical top-team scores (~0.945 private) — down from ~4.8 points before this session's fixes, but not closed.
 - `uid`'s current whole-partition group-stat aggregation is leakage-safe (fit on training data only) but not causally time-aware (it doesn't restrict to *prior* transactions relative to each row) - revisiting it with an expanding-window design could recover its benefit without the noise that caused the earlier regression.
 
 ## Next Steps
 
-1. Upload the fresh `reports/submission.csv` to Kaggle and record the new public/private scores, to see whether the real leaderboard confirms the internal 0.9222 → 0.9248 time-based improvement.
+1. Revisit `uid` with an expanding-window (prior-transactions-only) aggregation instead of whole-partition group stats, now that plain whole-partition `uid` is confirmed to hurt rather than help.
 2. Run and commit an EDA summary (target prevalence, missingness, cardinality, train/test drift) under `reports/`.
 3. Broaden the hyperparameter search beyond the current 2 candidates per booster.
 4. Set `evaluation.cost_false_negative`/`cost_false_positive` in `config.yaml` to reflect actual business costs rather than the illustrative 5:1 default used so far.
-5. Revisit `uid` with an expanding-window (prior-transactions-only) aggregation instead of whole-partition group stats.
 
 ## Project Structure
 
