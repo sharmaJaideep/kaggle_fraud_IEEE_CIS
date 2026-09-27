@@ -99,6 +99,7 @@ def test_ablation_flags_each_independently_disable_their_behavior():
             "card1": np.tile(np.arange(1, 11), n // 10),
             "card2": np.tile(np.arange(1, 11), n // 10),
             "addr1": np.tile(np.arange(1, 11), n // 10),
+            "D1": rng.uniform(0, 30, n),
             "V1": base,
             "V2": base + rng.normal(0, 1e-4, n),
         }
@@ -109,12 +110,21 @@ def test_ablation_flags_each_independently_disable_their_behavior():
     assert "uid_seconds_since_last_transaction" in default_columns
     assert "V2" not in default_columns
     assert "card1" not in default_columns
+    assert "D1_detrended" in default_columns
 
     no_uid_time = TransactionFeatureEngineer(enable_uid_time_features=False).fit(frame)
     no_uid_time_columns = set(no_uid_time.transform(frame).columns)
     assert "uid_seconds_since_last_transaction" not in no_uid_time_columns
     assert "uid_transactions_seen_before" not in no_uid_time_columns
     assert any(name.startswith("uid__") for name in no_uid_time_columns)  # uid grouping still active
+
+    no_uid_at_all = TransactionFeatureEngineer(enable_uid_reconstruction=False).fit(frame)
+    no_uid_at_all_columns = set(no_uid_at_all.transform(frame).columns)
+    assert not any(name.startswith("uid") for name in no_uid_at_all_columns)
+
+    no_d_detrend = TransactionFeatureEngineer(enable_d_column_detrending=False).fit(frame)
+    no_d_detrend_columns = set(no_d_detrend.transform(frame).columns)
+    assert "D1_detrended" not in no_d_detrend_columns
 
     no_v_pruning = TransactionFeatureEngineer(enable_v_column_pruning=False).fit(frame)
     assert no_v_pruning.dropped_v_columns_ == []

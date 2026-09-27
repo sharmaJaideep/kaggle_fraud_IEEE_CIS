@@ -21,16 +21,20 @@ class TransactionFeatureEngineer(BaseEstimator, TransformerMixin):
         self,
         id_column: str = "TransactionID",
         v_correlation_threshold: float = 0.95,
+        enable_uid_reconstruction: bool = True,
         enable_uid_time_features: bool = True,
         enable_v_column_pruning: bool = True,
+        enable_d_column_detrending: bool = True,
         drop_raw_id_columns: bool = True,
     ) -> None:
         self.id_column = id_column
         self.v_correlation_threshold = v_correlation_threshold
         # Ablation flags so each adversarial-validation-motivated change can be
         # isolated and measured independently rather than only all-at-once.
+        self.enable_uid_reconstruction = enable_uid_reconstruction
         self.enable_uid_time_features = enable_uid_time_features
         self.enable_v_column_pruning = enable_v_column_pruning
+        self.enable_d_column_detrending = enable_d_column_detrending
         self.drop_raw_id_columns = drop_raw_id_columns
         self.group_columns = ("card1", "card2", "addr1", "P_emaildomain", "ProductCD", "uid")
         self.interaction_columns = (
@@ -100,11 +104,12 @@ class TransactionFeatureEngineer(BaseEstimator, TransformerMixin):
             # removes that population-level time trend while keeping the raw columns,
             # which may still carry real signal beyond the trend, untouched.
             elapsed_days = seconds / 86400.0
-            d_columns = [f"D{number}" for number in range(1, 16) if f"D{number}" in features]
-            for column in d_columns:
-                features[f"{column}_detrended"] = (
-                    pd.to_numeric(features[column], errors="coerce") - elapsed_days
-                ).astype("float32")
+            if self.enable_d_column_detrending:
+                d_columns = [f"D{number}" for number in range(1, 16) if f"D{number}" in features]
+                for column in d_columns:
+                    features[f"{column}_detrended"] = (
+                        pd.to_numeric(features[column], errors="coerce") - elapsed_days
+                    ).astype("float32")
 
         for left, right in self.interaction_columns:
             if left in features and right in features:
@@ -114,9 +119,11 @@ class TransactionFeatureEngineer(BaseEstimator, TransformerMixin):
                     + features[right].astype("string").fillna("__MISSING__")
                 )
 
-        uid_components = [
-            column for column in ("card1", "card2", "card3", "card5", "addr1", "addr2") if column in features
-        ]
+        uid_components = (
+            [column for column in ("card1", "card2", "card3", "card5", "addr1", "addr2") if column in features]
+            if self.enable_uid_reconstruction
+            else []
+        )
         if uid_components:
             uid = features[uid_components[0]].astype("string").fillna("__MISSING__")
             for column in uid_components[1:]:
