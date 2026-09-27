@@ -271,6 +271,55 @@ def test_select_decision_threshold_finds_zero_cost_cutoff_for_separable_data():
     assert selected_row["recall"] == 1.0
 
 
+def test_v_column_correlation_pruning_drops_a_near_duplicate():
+    rng = np.random.default_rng(9)
+    n = 200
+    base = rng.normal(0, 1, n)
+    frame = pd.DataFrame(
+        {
+            "TransactionID": np.arange(n),
+            "isFraud": rng.integers(0, 2, n),
+            "TransactionAmt": rng.uniform(5, 200, n),
+            "V1": base,
+            "V2": base + rng.normal(0, 1e-4, n),  # near-perfect duplicate of V1
+            "V3": rng.normal(0, 1, n),  # independent
+        }
+    )
+    transformer = TransactionFeatureEngineer().fit(frame)
+
+    assert transformer.dropped_v_columns_ == ["V2"]
+    transformed = transformer.transform(frame)
+    assert "V1" in transformed.columns
+    assert "V3" in transformed.columns
+    assert "V2" not in transformed.columns
+
+
+def test_raw_high_cardinality_id_columns_are_dropped_but_their_stats_remain():
+    frame = _make_frame(80, fraud_rate=0.25)
+    frame["card2"] = np.tile(np.arange(1, 11), 8)
+    transformer = TransactionFeatureEngineer().fit(frame)
+    transformed = transformer.transform(frame)
+
+    for raw_column in ("card1", "card2", "addr1"):
+        assert raw_column not in transformed.columns
+        assert f"{raw_column}__group_count" in transformed.columns
+        assert f"{raw_column}__amount_delta" in transformed.columns
+
+
+def test_d_columns_get_a_time_detrended_companion_feature():
+    frame = _make_frame(40, fraud_rate=0.3)
+    frame["TransactionDT"] = np.arange(40) * 3600 * 24  # one day apart
+    frame["D1"] = 10.0  # constant "days since account creation" regardless of time
+    transformer = TransactionFeatureEngineer().fit(frame)
+    transformed = transformer.transform(frame)
+
+    assert "D1_detrended" in transformed.columns
+    # D1 stays flat while elapsed time grows, so the detrended value should trend
+    # downward across rows (each row is one more day further from the reference).
+    detrended = transformed["D1_detrended"].to_numpy()
+    assert detrended[0] > detrended[-1]
+
+
 def test_adversarial_validation_flags_a_genuinely_drifting_column():
     rng = np.random.default_rng(3)
     n = 300
