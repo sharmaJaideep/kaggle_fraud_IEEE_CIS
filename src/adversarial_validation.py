@@ -29,10 +29,9 @@ def _encode_for_adversarial_check(combined: pd.DataFrame) -> pd.DataFrame:
     """Factorize categorical columns jointly so unseen test-only categories
     don't crash, leaving numeric columns as-is except for a missing sentinel."""
     encoded = combined.copy()
-    for column in encoded.columns:
-        if encoded[column].dtype.name in {"object", "category", "string"}:
-            codes, _ = pd.factorize(encoded[column].astype("string"))
-            encoded[column] = codes.astype("int32")
+    for column in encoded.select_dtypes(include=["object", "string", "category"]).columns:
+        codes, _ = pd.factorize(encoded[column].astype("string"))
+        encoded[column] = codes.astype("int32")
     return encoded.replace([np.inf, -np.inf], np.nan).fillna(-999).astype("float32")
 
 
@@ -88,11 +87,12 @@ def run_adversarial_validation(
     importances /= n_splits
     overall_auc = float(roc_auc_score(labels, oof_predictions))
 
+    categorical_columns = set(train_features.select_dtypes(include=["object", "string", "category"]).columns)
     ranking = sorted(zip(shared_columns, importances), key=lambda pair: pair[1], reverse=True)
     top_features: list[dict[str, Any]] = []
     for column, importance in ranking[:top_n]:
         entry: dict[str, Any] = {"feature": column, "importance": float(importance)}
-        if train_features[column].dtype.name in {"object", "category", "string"}:
+        if column in categorical_columns:
             train_top = train_features[column].value_counts(normalize=True, dropna=False).head(3)
             test_top = test_features[column].value_counts(normalize=True, dropna=False).head(3)
             entry["kind"] = "categorical"
