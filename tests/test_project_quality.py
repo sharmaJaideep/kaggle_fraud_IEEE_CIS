@@ -48,6 +48,43 @@ def test_feature_engineer_produces_numeric_matrix_without_object_columns():
     assert not np.isinf(transformed_train.to_numpy()).any()
 
 
+def test_uid_reconstruction_groups_shared_cards_and_tracks_time_since_last_transaction():
+    frame = pd.DataFrame(
+        {
+            "TransactionID": [1, 2, 3, 4],
+            "TransactionDT": [1000, 5000, 2000, 100000],
+            "TransactionAmt": [10.0, 20.0, 15.0, 50.0],
+            "card1": [111, 111, 111, 222],
+            "card2": [1, 1, 1, 2],
+            "addr1": [50, 50, 50, 99],
+            "isFraud": [0, 0, 0, 1],
+        }
+    )
+    transformer = TransactionFeatureEngineer().fit(frame)
+    transformed = transformer.transform(frame)
+
+    assert "uid_seconds_since_last_transaction" in transformed.columns
+    assert "uid_transactions_seen_before" in transformed.columns
+    assert any(name.startswith("uid__") for name in transformed.columns)
+
+    counts = transformed["uid_transactions_seen_before"]
+    gaps = transformed["uid_seconds_since_last_transaction"]
+
+    # Rows 0-2 share the same card1/card2/addr1 combo (chronological order: 0, 2, 1);
+    # row 3 has a distinct combo and is its own client with no prior transaction.
+    assert counts.iloc[0] == 0
+    assert counts.iloc[2] == 1
+    assert counts.iloc[1] == 2
+    assert counts.iloc[3] == 0
+    assert gaps.iloc[2] == 1000
+    assert gaps.iloc[1] == 3000
+
+    # A single-row transform (no history in the batch) should not crash and should
+    # fall back to a fitted default rather than leaving a raw NaN in the matrix.
+    single_row = transformer.transform(frame.iloc[[1]])
+    assert np.isfinite(single_row["uid_seconds_since_last_transaction"].to_numpy()).all()
+
+
 def test_artifact_round_trip_and_predictions_are_valid():
     train = _make_frame(80, fraud_rate=0.25)
     transformer = TransactionFeatureEngineer().fit(train)

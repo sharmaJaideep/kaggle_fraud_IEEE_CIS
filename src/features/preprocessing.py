@@ -19,7 +19,7 @@ class TransactionFeatureEngineer(BaseEstimator, TransformerMixin):
 
     def __init__(self, id_column: str = "TransactionID") -> None:
         self.id_column = id_column
-        self.group_columns = ("card1", "addr1", "P_emaildomain", "ProductCD")
+        self.group_columns = ("card1", "addr1", "P_emaildomain", "ProductCD", "uid")
         self.interaction_columns = (
             ("card1", "addr1"),
             ("card1", "P_emaildomain"),
@@ -47,6 +47,37 @@ class TransactionFeatureEngineer(BaseEstimator, TransformerMixin):
                     + "__"
                     + features[right].astype("string").fillna("__MISSING__")
                 )
+
+        uid_components = [
+            column for column in ("card1", "card2", "card3", "card5", "addr1", "addr2") if column in features
+        ]
+        if uid_components:
+            uid = features[uid_components[0]].astype("string").fillna("__MISSING__")
+            for column in uid_components[1:]:
+                uid = uid + "_" + features[column].astype("string").fillna("__MISSING__")
+            if "D1" in features and "TransactionDT" in features:
+                # D1 tracks days since account creation, so D1 minus elapsed days is a
+                # near-constant residual per client even as TransactionDT grows, which
+                # reconstructs a pseudo customer identity far more reliably than raw
+                # card/address fields alone (cards get reused across real customers).
+                account_day = np.floor(
+                    pd.to_numeric(features["D1"], errors="coerce") - features["TransactionDT"] / 86400.0
+                )
+                uid = uid + "_" + account_day.astype("string").fillna("__MISSING__")
+            features["uid"] = uid
+
+            if "TransactionDT" in features:
+                # Relative to whatever rows are in this transform() call, not full
+                # history: a single-row API payload has no prior transaction to compare
+                # against, and falls back to the fitted median via numeric_medians_.
+                by_time = features.sort_values("TransactionDT", kind="stable")
+                features["uid_seconds_since_last_transaction"] = (
+                    by_time.groupby("uid")["TransactionDT"].diff().reindex(features.index)
+                )
+                features["uid_transactions_seen_before"] = (
+                    by_time.groupby("uid").cumcount().reindex(features.index).astype("float32")
+                )
+
         return features
 
     def fit(self, X: pd.DataFrame, y: Any = None) -> "TransactionFeatureEngineer":
