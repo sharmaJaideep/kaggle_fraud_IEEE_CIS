@@ -4,7 +4,7 @@
 
 This repository provides a reproducible machine learning foundation for the Kaggle IEEE-CIS Fraud Detection competition. The objective is to identify fraudulent online transactions from joined transaction and identity signals while keeping data preparation, validation, and model artifacts auditable.
 
-The initial baseline is deliberately practical: it prioritizes a reliable data contract, memory-aware loading, leakage-conscious validation, and a fast gradient-boosted model. It is a starting point for disciplined experimentation rather than a claim of leaderboard optimality.
+The baseline has grown from a single fast gradient-boosted model into a validation-weighted **three-model ensemble** (LightGBM, XGBoost, CatBoost) with out-of-fold blend-weight optimization, a chronological validation check, and a served FastAPI endpoint. It remains a foundation for disciplined experimentation rather than a claim of leaderboard optimality — Kaggle leaderboard scores are not yet recorded.
 
 ## Core Machine Learning Goals
 
@@ -12,29 +12,67 @@ The initial baseline is deliberately practical: it prioritizes a reliable data c
 - Optimize and report ROC-AUC, the competition's primary evaluation metric.
 - Preserve useful missingness and categorical information from both transaction and identity tables.
 - Prevent train/validation preprocessing drift by fitting consistent encodings across both partitions.
-- Build a repeatable path from experiment to saved model artifact.
+- Build a repeatable path from experiment to saved model artifact, through to a servable API.
+
+## Current Status (as of 2026-09-27)
+
+**Implemented and tested:**
+
+- **Data loading** (`src/data/loading.py`) — left-joins the transaction and identity tables on `TransactionID` and downcasts numeric dtypes to reduce memory pressure.
+- **Feature engineering** (`src/features/preprocessing.py`) — a fitted, sklearn-compatible `TransactionFeatureEngineer` that adds missingness flags, log-scaled transaction amount, time-of-day/day/week features, categorical interaction columns, frequency encodings, and per-group (card/address/email/product) amount aggregates. All learned state is fit on training data only and tolerates partial-column inference payloads (e.g. a single-transaction API request).
+- **Models** (`src/models/baseline.py`) — LightGBM, XGBoost, and CatBoost, each configured with imbalance-aware class weighting (`scale_pos_weight` / `auto_class_weights`).
+- **Ensembling** (`src/models/ensemble.py`) — blend weights are chosen by grid-searching the weight simplex against out-of-fold predictions (`optimize_oof_blend_weights`), and the fitted transformer, models, weights, and metadata are serialized into a single deployable artifact (`save_artifact` / `load_artifact` / `predict_artifact`).
+- **Validation** (`src/validation.py`) — stratified K-fold OOF validation (every row scored exactly once, out-of-fold) and a chronological (`TransactionDT`-ordered) 80/20 split to catch temporal drift that a random split would hide.
+- **Training entry point** (`src/train.py`) — holds out an untouched stratified partition, tunes blend weights via OOF on the remainder, evaluates on the untouched holdout and a time-based split, then refits final models on all labeled rows for the deployed artifact. Emits `reports/oof_predictions.csv` and `reports/validation_report.json` (per-fold metrics, blend weights, training fingerprint, runtime).
+- **Submission generation** (`src/predict_test.py`, `src/reporting.py`) — scores the Kaggle test set with the saved artifact and writes a schema- and order-validated `submission.csv`.
+- **Serving** (`app.py`) — a FastAPI app exposing `/health`, `/model-info`, `/predict`, and `/predict_batch`.
+- **Tests** (`tests/test_project_quality.py`) — 6 passing tests covering the feature engineer, OOF/blend-weight logic, time-based validation, a full synthetic train → artifact → submission pipeline, and the API contract.
+- A trained artifact already exists locally at `models/fraud_ensemble.joblib` (~12 MB) from a prior run. Model artifacts and validation reports are gitignored as generated outputs, so they are reproduced locally via the commands below rather than committed.
+
+**Not yet done:**
+
+- No EDA summary or figures are committed under `reports/`, despite being part of the intended workflow below.
+- Hyperparameter search exists as a helper (`tune_model_configs` in `src/models/ensemble.py`) but is not yet wired into `src/train.py`'s default run.
+- No CI workflow runs the test suite automatically on push/PR.
+- No calibration analysis or business-facing decision-threshold study yet, beyond the fixed default threshold used by the API.
+- Kaggle public/private leaderboard scores are unset (`null` placeholders in `validation_report.json`) — no submission has been uploaded to the competition.
+
+## Next Steps
+
+1. Run and commit an EDA summary (target prevalence, missingness, cardinality, train/test drift) under `reports/`.
+2. Wire `tune_model_configs` into `src/train.py` (or a dedicated tuning entry point) so hyperparameter selection is reproducible rather than manual.
+3. Upload a submission to Kaggle and record the public/private leaderboard AUC in `validation_report.json`.
+4. Add a GitHub Actions (or equivalent) workflow to run `pytest` on every push/PR.
+5. Add calibration diagnostics and a threshold-selection analysis to support a real deployment decision, not just the default 0.5 cutoff.
 
 ## Project Structure
 
 ```text
 .
 ├── config/
-│   └── config.yaml              # Data paths, validation, and model parameters
-├── input_data/                  # Existing raw Kaggle files; never modified by setup
+│   └── config.yaml               # Data paths, validation, and model parameters
+├── input_data/                   # Existing raw Kaggle files; never modified by setup
 │   └── ieee-fraud-detection/
-├── models/                      # Persisted model artifacts
+├── models/                       # Persisted model artifacts (gitignored)
 ├── notebooks/
-│   └── 01_baseline_model.ipynb  # End-to-end baseline experiment
-├── reports/                     # Evaluation outputs and figures
-├── logs/                        # Run logs
-├── app.py                       # FastAPI fraud-risk service
+│   └── 01_baseline_model.ipynb   # End-to-end baseline experiment
+├── reports/                      # Evaluation outputs, OOF predictions, submissions (gitignored)
+├── logs/                         # Run logs
+├── app.py                        # FastAPI fraud-risk service
 ├── src/
-│   ├── data/loading.py          # Join and memory reduction utilities
-│   ├── features/preprocessing.py# Fitted aggregation/frequency feature logic
-│   ├── models/ensemble.py       # Validation-weighted booster ensemble/artifacts
-│   └── train.py                 # Reproducible training entry point
+│   ├── data/loading.py           # Join and memory reduction utilities
+│   ├── features/preprocessing.py # Fitted aggregation/frequency feature logic
+│   ├── models/
+│   │   ├── baseline.py           # Per-booster model factories (LightGBM/XGBoost/CatBoost)
+│   │   └── ensemble.py           # Blend-weight optimization, artifact save/load/predict
+│   ├── validation.py             # Stratified OOF and chronological validation
+│   ├── reporting.py              # Submission writer and validation report writer
+│   ├── train.py                  # Reproducible training entry point
+│   └── predict_test.py           # Kaggle test-set submission generator
+├── tests/
+│   └── test_project_quality.py   # Feature engineer, validation, pipeline, and API tests
 ├── requirements.txt
-├── setup_project.py              # Idempotent layout creator
+├── setup_project.py               # Idempotent layout creator
 └── README.md
 ```
 
@@ -89,12 +127,17 @@ Report ROC-AUC on an untouched validation set, alongside the fraud rate, confusi
 
 ## Ensemble training and deployment
 
-The reusable training path fits transaction-identity group counts and amount statistics, missingness indicators, frequency encodings, time features, and categorical interactions using the training partition only. It trains LightGBM, XGBoost, and CatBoost with explicit tuned configurations, weights their validation probabilities by ROC-AUC, and saves preprocessing plus models together:
+The reusable training path selects blend weights from stratified out-of-fold predictions on a model-selection partition, reports performance on a separate untouched stratified holdout and a chronological validation split, then refits the selected models on all labeled rows. Feature mappings are fitted inside each fold for OOF evaluation and on the complete labeled dataset for the final artifact:
 
 ```bash
 python -m src.train --config config/config.yaml --artifact models/fraud_ensemble.joblib
+python -m src.predict_test --config config/config.yaml --artifact models/fraud_ensemble.joblib --output reports/submission.csv
 uvicorn app:app --host 0.0.0.0 --port 8000
 ```
+
+Training writes `reports/oof_predictions.csv` with one OOF row and fold assignment per selection row, plus `reports/validation_report.json` with OOF fold metrics, time-validation scores, untouched-holdout scores, blend weights, runtime, and a training fingerprint. Time-validation blend scores use fixed equal weights; OOF-selected weights are assessed on the untouched stratified holdout. The OOF blend score is a selection metric, not an unbiased performance estimate.
+
+The submission command joins the test identity table, scores the Kaggle test rows with the saved full-train artifact, validates probabilities and IDs against `sample_submission.csv`, and writes exactly `TransactionID,isFraud` in sample order. It does not use test labels. Kaggle public and private leaderboard scores remain unset until a submission is uploaded.
 
 The service loads `models/fraud_ensemble.joblib` by default. Set `FRAUD_ARTIFACT_PATH` to use another artifact. Send one transaction JSON object to `POST /predict`; the response contains `fraud_probability`. `GET /health` reports whether the artifact loaded successfully.
 
