@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -8,6 +9,7 @@ from fastapi.testclient import TestClient
 from app import app
 from src.adversarial_validation import run_adversarial_validation
 from src.calibration import compute_calibration_curve, select_decision_threshold
+from src.eda import compute_card_correlation, plot_card_correlation_heatmap, summarize_high_correlation_pairs
 from src.features.preprocessing import TransactionFeatureEngineer
 from src.models.ensemble import load_artifact, optimize_oof_blend_weights, predict_artifact, save_artifact
 from src.predict_test import generate_submission
@@ -395,6 +397,35 @@ def test_d_columns_get_a_time_detrended_companion_feature():
     # downward across rows (each row is one more day further from the reference).
     detrended = transformed["D1_detrended"].to_numpy()
     assert detrended[0] > detrended[-1]
+
+
+def test_card_correlation_finds_redundant_and_independent_fields(tmp_path):
+    rng = np.random.default_rng(5)
+    n = 300
+    card1 = rng.normal(0, 1, n)
+    frame = pd.DataFrame(
+        {
+            "card1": card1,
+            "card2": card1 * 2 + rng.normal(0, 0.01, n),  # near-duplicate of card1
+            "addr1": rng.normal(0, 1, n),  # independent
+            "TransactionAmt": rng.uniform(5, 200, n),
+        }
+    )
+    target = (card1 > 0).astype(int)  # correlates strongly with card1/card2, not addr1
+
+    correlation = compute_card_correlation(frame, target, columns=("card1", "card2", "addr1", "TransactionAmt"))
+    assert set(correlation.columns) == {"card1", "card2", "addr1", "TransactionAmt", "isFraud"}
+    assert correlation.loc["card1", "card2"] > 0.99
+    assert abs(correlation.loc["card1", "isFraud"]) > abs(correlation.loc["addr1", "isFraud"])
+
+    pairs = summarize_high_correlation_pairs(correlation, threshold=0.9)
+    assert any({pair["left"], pair["right"]} == {"card1", "card2"} for pair in pairs)
+    assert not any({pair["left"], pair["right"]} == {"card1", "addr1"} for pair in pairs)
+
+    output_path = tmp_path / "heatmap.png"
+    saved_path = plot_card_correlation_heatmap(correlation, output_path)
+    assert Path(saved_path).exists()
+    assert Path(saved_path).stat().st_size > 0
 
 
 def test_adversarial_validation_flags_a_genuinely_drifting_column():
