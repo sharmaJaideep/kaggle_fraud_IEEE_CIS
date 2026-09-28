@@ -49,13 +49,17 @@ class TransactionFeatureEngineer(BaseEstimator, TransformerMixin):
         # Their aggregate/frequency behavior is preserved via group_columns above.
         self.raw_columns_to_drop = ("card1", "card2", "addr1")
 
-    def _select_v_columns_to_drop(self, X: pd.DataFrame) -> list[str]:
+    def _select_v_columns_to_drop(self, X: pd.DataFrame, y: Any = None) -> list[str]:
         """Greedily dedupe the ~340 anonymized V columns by pairwise correlation.
 
         Many V columns are near-duplicates (868 pairs found with |corr| > 0.95 in
-        an EDA pass on the real data) - keeping every redundant copy just gives a
-        tree model more chances to overfit to noise in whichever copy it happens
-        to split on.
+        an EDA pass on the real data). Redundancy alone isn't a safe reason to
+        drop a column, though: an ablation study found naive "keep whichever
+        comes first" pruning measurably hurt time-based validation AUC, because
+        it sometimes threw away the more predictive half of a correlated pair.
+        When a target is available, each correlated pair is resolved by keeping
+        whichever column correlates more strongly with fraud, not by column
+        order - redundancy elimination without discarding signal.
         """
         v_columns = [
             column for column in X.columns if column.startswith("V") and pd.api.types.is_numeric_dtype(X[column])
@@ -63,9 +67,18 @@ class TransactionFeatureEngineer(BaseEstimator, TransformerMixin):
         if len(v_columns) < 2:
             return []
         sample = X[v_columns]
+        target = pd.Series(np.asarray(y), index=X.index) if y is not None else None
         if len(sample) > 100_000:
             sample = sample.sample(100_000, random_state=42)
+            if target is not None:
+                target = target.loc[sample.index]
         correlation = sample.corr().abs()
+        target_relevance = (
+            sample.apply(lambda column: column.corr(target)).abs()
+            if target is not None
+            else pd.Series(0.0, index=v_columns)
+        )
+
         to_drop: set[str] = set()
         for left_index, left in enumerate(v_columns):
             if left in to_drop:
@@ -75,6 +88,13 @@ class TransactionFeatureEngineer(BaseEstimator, TransformerMixin):
                     continue
                 value = correlation.loc[left, right]
                 if pd.notna(value) and value > self.v_correlation_threshold:
+                    left_relevance = target_relevance.get(left, 0.0)
+                    right_relevance = target_relevance.get(right, 0.0)
+                    left_relevance = 0.0 if pd.isna(left_relevance) else left_relevance
+                    right_relevance = 0.0 if pd.isna(right_relevance) else right_relevance
+                    if right_relevance > left_relevance:
+                        to_drop.add(left)
+                        break
                     to_drop.add(right)
         return sorted(to_drop)
 
@@ -154,7 +174,7 @@ class TransactionFeatureEngineer(BaseEstimator, TransformerMixin):
         return features
 
     def fit(self, X: pd.DataFrame, y: Any = None) -> "TransactionFeatureEngineer":
-        self.dropped_v_columns_ = self._select_v_columns_to_drop(X) if self.enable_v_column_pruning else []
+        self.dropped_v_columns_ = self._select_v_columns_to_drop(X, y) if self.enable_v_column_pruning else []
         frame = self._base_features(X)
         self.input_columns_ = list(frame.columns)
         self.categorical_maps_: dict[str, dict[str, int]] = {}

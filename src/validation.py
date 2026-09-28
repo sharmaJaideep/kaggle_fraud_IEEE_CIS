@@ -55,7 +55,9 @@ def kfold_oof_validation(
         oof_seen[valid_idx] += 1
         oof_folds[valid_idx] = fold_number
 
-        transformer = TransactionFeatureEngineer(id_column=id_column, **(feature_flags or {})).fit(train_frame)
+        transformer = TransactionFeatureEngineer(id_column=id_column, **(feature_flags or {})).fit(
+            train_frame, y_train
+        )
         X_train = transformer.transform(train_frame)
         X_valid = transformer.transform(valid_frame)
 
@@ -125,7 +127,7 @@ def time_based_validation(
     y_train = labels[train_indices]
     y_valid = labels[valid_indices]
 
-    transformer = TransactionFeatureEngineer(id_column=id_column, **(feature_flags or {})).fit(train_frame)
+    transformer = TransactionFeatureEngineer(id_column=id_column, **(feature_flags or {})).fit(train_frame, y_train)
     X_train = transformer.transform(train_frame)
     X_valid = transformer.transform(valid_frame)
 

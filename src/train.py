@@ -64,7 +64,9 @@ def train(config_path: str | Path = "config/config.yaml", artifact_path: str | P
         )
         tune_train_frame = selection_frame.iloc[tune_train_idx].copy()
         tune_valid_frame = selection_frame.iloc[tune_valid_idx].copy()
-        tuning_transformer = TransactionFeatureEngineer(id_column, **feature_flags).fit(tune_train_frame)
+        tuning_transformer = TransactionFeatureEngineer(id_column, **feature_flags).fit(
+            tune_train_frame, selection_target[tune_train_idx]
+        )
         tune_train_features = tuning_transformer.transform(tune_train_frame)
         tune_valid_features = tuning_transformer.transform(tune_valid_frame)
         candidate_pool = model_settings.get("tuning_candidates") or DEFAULT_TUNING_CANDIDATES
@@ -107,7 +109,9 @@ def train(config_path: str | Path = "config/config.yaml", artifact_path: str | P
         feature_flags=feature_flags,
     )
 
-    selection_transformer = TransactionFeatureEngineer(id_column, **feature_flags).fit(selection_frame)
+    selection_transformer = TransactionFeatureEngineer(id_column, **feature_flags).fit(
+        selection_frame, selection_target
+    )
     selection_features = selection_transformer.transform(selection_frame)
     holdout_features = selection_transformer.transform(holdout_frame)
     selection_class_weight = float((selection_target == 0).sum() / max((selection_target == 1).sum(), 1))
@@ -147,7 +151,7 @@ def train(config_path: str | Path = "config/config.yaml", artifact_path: str | P
         row for row in threshold_curve if abs(row["threshold"] - selected_threshold) < 1e-9
     )
 
-    final_transformer = TransactionFeatureEngineer(id_column, **feature_flags).fit(frame)
+    final_transformer = TransactionFeatureEngineer(id_column, **feature_flags).fit(frame, target)
     final_features = final_transformer.transform(frame)
     full_class_weight = float((target.to_numpy() == 0).sum() / max((target.to_numpy() == 1).sum(), 1))
     final_models = {}

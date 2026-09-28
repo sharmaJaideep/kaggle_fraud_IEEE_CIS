@@ -343,7 +343,32 @@ def test_v_column_correlation_pruning_drops_a_near_duplicate():
     transformed = transformer.transform(frame)
     assert "V1" in transformed.columns
     assert "V3" in transformed.columns
-    assert "V2" not in transformed.columns
+
+
+def test_v_column_pruning_keeps_the_more_predictive_column_when_target_given():
+    rng = np.random.default_rng(11)
+    n = 400
+    base = rng.normal(0, 1, n)
+    # V1 is a noisier measurement of `base`, V2 a cleaner one - both still
+    # correlate with each other above the pruning threshold.
+    v1 = base + rng.normal(0, 0.2, n)
+    v2 = base + rng.normal(0, 0.05, n)
+    frame = pd.DataFrame(
+        {
+            "TransactionID": np.arange(n),
+            "TransactionAmt": rng.uniform(5, 200, n),
+            "V1": v1,
+            "V2": v2,
+        }
+    )
+    assert abs(np.corrcoef(v1, v2)[0, 1]) > 0.95
+    target = (base + rng.normal(0, 0.05, n) > 0).astype(int)
+
+    no_target = TransactionFeatureEngineer().fit(frame)
+    assert no_target.dropped_v_columns_ == ["V2"]  # arbitrary tiebreak, keeps V1 (comes first)
+
+    with_target = TransactionFeatureEngineer().fit(frame, target)
+    assert with_target.dropped_v_columns_ == ["V1"]  # keeps V2, the one more correlated with the target
 
 
 def test_raw_high_cardinality_id_columns_are_dropped_but_their_stats_remain():
