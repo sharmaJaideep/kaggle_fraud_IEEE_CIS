@@ -63,13 +63,17 @@ features:
   # compute a time gap for); left true for whenever uid reconstruction is
   # revisited with a leakage-safe, expanding-window implementation.
   enable_uid_time_features: true
-  # Dropping raw card1/card2/addr1 and pruning correlated V-columns were both
-  # motivated by adversarial validation (they help a model tell train and test
-  # apart), but ablation showed both are mildly *negative* for time-based AUC
-  # here - being train/test-distinguishable doesn't mean a column lacks real
-  # predictive signal. Keeping them scored best (0.9238 -> 0.9248).
-  enable_v_column_pruning: false
+  # Dropping raw card1/card2/addr1 was motivated by adversarial validation
+  # (it helps a model tell train and test apart), but ablation showed it's
+  # mildly *negative* for time-based AUC here - being train/test-
+  # distinguishable doesn't mean a column lacks real predictive signal.
   drop_raw_id_columns: false
+  # V-column pruning was originally order-arbitrary (keep whichever of a
+  # correlated pair comes first) and, like drop_raw_id_columns, measured
+  # mildly negative. Making it target-aware instead (keep whichever column
+  # of a correlated pair correlates more with fraud) flipped that to a small
+  # positive (0.9248 -> 0.9251), plus 110 fewer V-columns for free.
+  enable_v_column_pruning: true
   # D-column detrending (Dn - TransactionDT/86400) is a confirmed, clean win -
   # disabling it alone dropped AUC to 0.8996, well below even the regressed
   # baseline. Genuine time drift, correctly fixed.
